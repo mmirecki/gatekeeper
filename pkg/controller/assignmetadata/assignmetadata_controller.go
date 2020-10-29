@@ -18,6 +18,7 @@ package assignmentmetadata
 
 import (
 	"context"
+	"strings"
 
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	mutationsv1alpha1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1alpha1"
@@ -152,6 +153,10 @@ func (r *AssignMetadataReconciler) Reconcile(request reconcile.Request) (reconci
 		if err != nil {
 			log.Error(err, "Failed to insert")
 		}
+		log.Info("!!!! PARSING LOCATION ", "resource", m)
+		typeEntries := parseLocation(m)
+		log.Info("!!!!         PARSED ", "typeEntries", typeEntries)
+
 	} else {
 		err := r.cache.Remove(mutation.MetadataMutator{AssignMetadata: m.DeepCopy()})
 		if err != nil {
@@ -159,4 +164,83 @@ func (r *AssignMetadataReconciler) Reconcile(request reconcile.Request) (reconci
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+type Type string
+
+type PathEntry interface {
+	Type() Type
+}
+
+// QUESTION: should we use nil-pointers instead of empty strings
+// to represent unset paths?
+type Object struct {
+	TypeName Type
+	PointsTo *string // the field name this entry points to for
+	// the next entry in the list, should be
+	// an empty string for the last item in the
+	// PathEntry array
+}
+
+func (o Object) Type() Type {
+	return o.TypeName
+}
+
+type List struct {
+	TypeName Type
+	KeyField string  // The key field for the member objects
+	KeyValue *string // The value of the keyfield, must be populated
+	// for the last item in the PathEntry array
+	Globbed bool // Globbed. This cannot be true if keyValue is
+	// set
+}
+
+func (o List) Type() Type {
+	return o.TypeName
+}
+
+func parseLocation(m *mutationsv1alpha1.AssignMetadata) []PathEntry {
+	location := m.Spec.Location
+	log.Info("######    LOCATION ", "location", location)
+
+	locationParts := strings.Split(location, ".")
+	entries := make([]PathEntry, 0)
+
+	for _, part := range locationParts {
+		log.Info("######     ", "part", part)
+		log.Info("######     ", "Contains", strings.Contains(part, "["))
+		log.Info("######     ", "Index", strings.Index(part, "]") == len(part)-1)
+		log.Info("######     ", "Index1", strings.Index(part, "]"))
+		log.Info("######     ", "Index2", len(part)-1)
+
+		if strings.Contains(part, "[") && strings.Index(part, "]") == len(part)-1 {
+			log.Info("######    LIST!!! ")
+
+			pointsTo := part[:strings.Index(part, "[")]
+			key := part[strings.Index(part, "["):]
+			keyValue := key[strings.Index(part, ":"):]
+			globbed := false
+			if keyValue == "" || keyValue == "*" {
+				keyValue = ""
+				globbed = true
+			}
+			obj := Object{PointsTo: &pointsTo}
+
+			list := List{
+				KeyField: key[:strings.Index(part, ":")],
+				KeyValue: &keyValue,
+				Globbed:  globbed,
+			}
+			entries = append(entries, obj)
+			entries = append(entries, list)
+		} else {
+			log.Info("######    OBJECT!!! ")
+			name := part
+			obj := Object{PointsTo: &name}
+			entries = append(entries, obj)
+
+		}
+
+	}
+	return entries
 }
